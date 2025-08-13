@@ -1,28 +1,82 @@
-name: Build UnrealSpeccy
+name: Build UnrealSpeccyP (Windows, MinGW)
 
 on:
   push:
   pull_request:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-win:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libsdl2-dev
+      - name: Setup MSYS2 (MINGW64)
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-SDL2
+          msystem: MINGW64
 
-      - name: Configure
-        run: cmake -B build -S .
+      - name: Show layout (debug)
+        shell: msys2 {0}
+        run: |
+          ls -la
+          echo "Makefiles:"
+          (git ls-files | grep -E '(Makefile(\.gcc)?|GNUmakefile)$' || true)
 
-      - name: Build
-        run: cmake --build build --parallel
+      - name: Build (Makefile.gcc if available, else Makefile)
+        shell: msys2 {0}
+        env:
+          MAKEFLAGS: -j$(nproc)
+        run: |
+          set -e
+          BUILD_DIR="."
+          if [ -f "win/Makefile.gcc" ]; then
+            echo ">> Using win/Makefile.gcc"
+            make -C win -f Makefile.gcc
+            BUILD_DIR="win"
+          elif [ -f "Makefile.gcc" ]; then
+            echo ">> Using Makefile.gcc in root"
+            make -f Makefile.gcc
+            BUILD_DIR="."
+          elif [ -f "win/Makefile" ]; then
+            echo ">> Using win/Makefile"
+            make -C win
+            BUILD_DIR="win"
+          elif [ -f "Makefile" ]; then
+            echo ">> Using Makefile in root"
+            make
+            BUILD_DIR="."
+          else
+            echo "::error ::Nenalezen Makefile(.gcc) – uprav cestu nebo build skript."
+            exit 1
+          fi
+          echo "BUILD_DIR=$BUILD_DIR" >> $GITHUB_ENV
 
-      - name: Upload build artifact
+      - name: Collect .exe
+        shell: bash
+        run: |
+          mkdir -p out
+          # zkuste najít exe z obvyklých míst (win/, bin/, build/…)
+          for d in "$BUILD_DIR" bin build . ; do
+            if [ -d "$d" ]; then
+              find "$d" -type f -name "*.exe" -maxdepth 4 -print -exec cp -v {} out/ \; || true
+            fi
+          done
+          # když nic, přibalíme celý build pro diagnostiku
+          if [ -z "$(ls -A out 2>/dev/null)" ]; then
+            echo "No EXEs found; packaging build dir for inspection."
+            tar czf out_build.tgz "$BUILD_DIR"
+            mv out_build.tgz out/
+          fi
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unreal-speccy
-          path: build/unreal_speccy
+          name: unrealspeccyp-windows-mingw
+          path: out/**
